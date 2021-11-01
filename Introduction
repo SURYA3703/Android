@@ -1,0 +1,547 @@
+Introduction:
+
+I shared step by step process to implement automatic SMS verification in your Android App. Before that, Let’s understand the flow of SMS verification process.
+
+Why you should use SMS Retriever API
+Google change some critical changes in policy. From Jan 19th, 2019 google removed all app from play store with permission CALL_LOG and READ_SMS
+
+4. Understand the SMS verification process
+Earlier, when user had to login in android app on Android Platform, They enter mobile number to receive OTP. Then they gives READ_SMS permission to app for reading SMS. Recently Google had made some important change in its policy. Now Android Platform removes this permission due to data security reasons. So now you have to copy code received through SMS. Go back to the app and enter that code manually to log in.  
+
+For overcoming this process, Google introduced SMS Retriever API to automatically fetch a verification code sent via SMS within the app. This way, user was not required to manually enter the code every time. Let’s follow the these given step to implement Automatic SMS Verification in an Android App.
+
+5. Step of Implementation
+Now, I will explain you step by step process to implement automatic SMS verification in your Android App
+
+5.1 Add gradle dependency in-app level
+Add the below lib in app level build.gradle for integrating SMS Retriever API in your project
+
+dependencies {
+  implementation fileTree(dir: 'libs', include: ['*.jar'])
+  implementation 'androidx.appcompat:appcompat:1.0.2'
+  implementation 'com.android.support.constraint:constraint-layout:1.1.3'
+  // lib for SMS verification (Phone Auth)
+  implementation 'com.google.android.gms:play-services-auth:17.0.0'
+  implementation 'com.google.android.gms:play-services-auth-api-phone:17.0.0'
+  testImplementation 'junit:junit:4.12'
+  androidTestImplementation 'com.android.support.test:runner:1.0.2'
+  androidTestImplementation 'com.android.support.test.espresso:espresso-core:3.0.2'
+}
+5.2 Retrieve user’s content from the Phone
+Obtain the phone number from device through hint picker for do that follow below step
+
+Setup Google API Client
+//set google api client for hint request
+    mGoogleApiClient = new GoogleApiClient.Builder(this)
+        .addConnectionCallbacks(this)
+        .enableAutoManage(this, this)
+        .addApi(Auth.CREDENTIALS_API)
+        .build();
+Get an available number in user phone
+ public void getHintPhoneNumber() {
+    HintRequest hintRequest =
+        new HintRequest.Builder()
+            .setPhoneNumberIdentifierSupported(true)
+            .build();
+    PendingIntent mIntent = Auth.CredentialsApi.getHintPickerIntent(mGoogleApiClient, hintRequest);
+    try {
+      startIntentSenderForResult(mIntent.getIntentSender(), RESOLVE_HINT, null, 0, 0, 0);
+    } catch (IntentSender.SendIntentException e) {
+      e.printStackTrace();
+    }
+  }
+Get Selected Number in onActivityResult
+@Override
+  protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
+    super.onActivityResult(requestCode, resultCode, data);
+    //Result if we want hint number
+    if (requestCode == RESOLVE_HINT) {
+      if (resultCode == Activity.RESULT_OK) {
+        Credential credential = data.getParcelableExtra(Credential.EXTRA_KEY);
+        // credential.getId();  < – will need to process phone number string
+        inputMobileNumber.setText(credential.getId());
+      }
+    }
+  }
+5.3 Start SMS Retriever
+Once user submitted the phone, we should initiate SMS retrieval task  
+
+public void startSMSListener() {
+    SmsRetrieverClient mClient = SmsRetriever.getClient(this);
+    Task<Void> mTask = mClient.startSmsRetriever();
+    mTask.addOnSuccessListener(new OnSuccessListener<Void>() {
+      @Override public void onSuccess(Void aVoid) {
+        layoutInput.setVisibility(View.GONE);
+        layoutVerify.setVisibility(View.VISIBLE);
+        Toast.makeText(MainActivity.this, "SMS Retriever starts", Toast.LENGTH_LONG).show();
+      }
+    });
+    mTask.addOnFailureListener(new OnFailureListener() {
+      @Override public void onFailure(@NonNull Exception e) {
+        Toast.makeText(MainActivity.this, "Error", Toast.LENGTH_LONG).show();
+      }
+    });
+  }
+5.4 Create an SMS Broadcast Receiver
+Let’s create a Broadcast Receiver to receive SMS from SMS retriever API  
+
+package com.wave.smsverification.receiver;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.os.Bundle;
+import android.util.Log;
+import com.google.android.gms.auth.api.phone.SmsRetriever;
+import com.google.android.gms.common.api.CommonStatusCodes;
+import com.google.android.gms.common.api.Status;
+import com.wave.smsverification.interfaces.OtpReceivedInterface;
+/**
+ * Created on : May 21, 2019
+ * Author     : AndroidWave
+ */
+public class SmsBroadcastReceiver extends BroadcastReceiver {
+  private static final String TAG = "SmsBroadcastReceiver";
+  OtpReceivedInterface otpReceiveInterface = null;
+  public void setOnOtpListeners(OtpReceivedInterface otpReceiveInterface) {
+    this.otpReceiveInterface = otpReceiveInterface;
+  }
+  @Override public void onReceive(Context context, Intent intent) {
+    Log.d(TAG, "onReceive: ");
+    if (SmsRetriever.SMS_RETRIEVED_ACTION.equals(intent.getAction())) {
+      Bundle extras = intent.getExtras();
+      Status mStatus = (Status) extras.get(SmsRetriever.EXTRA_STATUS);
+      switch (mStatus.getStatusCode()) {
+        case CommonStatusCodes.SUCCESS:
+          // Get SMS message contents'
+          String message = (String) extras.get(SmsRetriever.EXTRA_SMS_MESSAGE);
+          Log.d(TAG, "onReceive: failure "+message);
+          if (otpReceiveInterface != null) {
+            String otp = message.replace("<#> Your otp code is : ", "");
+            otpReceiveInterface.onOtpReceived(otp);
+          }
+          break;
+        case CommonStatusCodes.TIMEOUT:
+          // Waiting for SMS timed out (5 minutes)
+          Log.d(TAG, "onReceive: failure");
+          if (otpReceiveInterface != null) {
+            otpReceiveInterface.onOtpTimeout();
+          }
+          break;
+      }
+    }
+  }
+}
+Create a listener that send the OTP to activity or fragment
+package com.wave.smsverification.interfaces;
+/**
+ * Created on : May 21, 2019
+ * Author     : AndroidWave
+ */
+public interface OtpReceivedInterface {
+  void onOtpReceived(String otp);
+  void onOtpTimeout();
+}
+5.6 Register SMS broadcast receiver in AndroidManifest
+Open the Android Manifest and register the receiver with intent filter
+
+<receiver
+        android:name=".receiver.SmsBroadcastReceiver"
+        android:exported="true">
+      <intent-filter>
+        <action android:name="com.google.android.gms.auth.api.phone.SMS_RETRIEVE" />
+      </intent-filter>
+</receiver>
+5.7 Open activity_main.xml and paste below code
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:gravity="center"
+    android:orientation="vertical"
+    tools:context=".MainActivity"
+    >
+  <android.support.constraint.ConstraintLayout
+      android:id="@+id/getOTPLayout"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginBottom="24dp"
+      android:visibility="visible"
+      >
+    <ImageView
+        android:id="@+id/imageView"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginEnd="8dp"
+        android:layout_marginStart="8dp"
+        android:layout_marginTop="8dp"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintHorizontal_bias="0.498"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent"
+        app:srcCompat="@drawable/otp"
+        />
+    <EditText
+        android:id="@+id/editTextInputMobile"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginEnd="16dp"
+        android:layout_marginStart="16dp"
+        android:layout_marginTop="16dp"
+        android:ems="10"
+        android:gravity="center"
+        android:hint="9166964412"
+        android:inputType="phone"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@+id/textView2"
+        />
+    <Button
+        android:id="@+id/buttonGetOTP"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="16dp"
+        android:layout_marginEnd="8dp"
+        android:layout_marginStart="8dp"
+        android:layout_marginTop="24dp"
+        android:background="@color/colorAccent"
+        android:paddingLeft="16dp"
+        android:paddingRight="16dp"
+        android:text="Get OTP"
+        android:textAllCaps="false"
+        android:textColor="#fff"
+        android:textSize="16sp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@+id/editTextInputMobile"
+        />
+    <TextView
+        android:id="@+id/textView2"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginEnd="8dp"
+        android:layout_marginStart="8dp"
+        android:layout_marginTop="16dp"
+        android:text="Enter the mobile number"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@+id/imageView"
+        />
+  </android.support.constraint.ConstraintLayout>
+  <android.support.constraint.ConstraintLayout
+      android:id="@+id/verifyOTPLayout"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginBottom="24dp"
+      android:visibility="gone"
+      >
+    <ImageView
+        android:id="@+id/imageView2"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginEnd="8dp"
+        android:layout_marginStart="8dp"
+        android:layout_marginTop="8dp"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintHorizontal_bias="0.498"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent"
+        app:srcCompat="@drawable/otp"
+        />
+    <EditText
+        android:id="@+id/editTextOTP"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginEnd="16dp"
+        android:layout_marginStart="16dp"
+        android:layout_marginTop="16dp"
+        android:ems="10"
+        android:gravity="center"
+        android:hint=""
+        android:inputType="phone"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@+id/textView"
+        />
+    <Button
+        android:id="@+id/buttonVerify"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="16dp"
+        android:layout_marginEnd="8dp"
+        android:layout_marginStart="8dp"
+        android:layout_marginTop="24dp"
+        android:background="@color/colorAccent"
+        android:paddingLeft="16dp"
+        android:paddingRight="16dp"
+        android:text="Verify"
+        android:textAllCaps="false"
+        android:textColor="#fff"
+        android:textSize="16sp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@+id/editTextOTP"
+        />
+    <TextView
+        android:id="@+id/textView"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginEnd="8dp"
+        android:layout_marginStart="8dp"
+        android:layout_marginTop="16dp"
+        android:text="Enter the OTP received on"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@+id/imageView2"
+        />
+  </android.support.constraint.ConstraintLayout>
+</LinearLayout>
+5.8 Initiate the request for OTP
+Call server API for requesting OTP and when you got success start SMS Listener for listing auto read message listener
+
+// listen sms  
+ startSMSListener();
+5.9 Get SMS format & verification code in SMS Broadcast Receiver
+This receiver will receive the OTP and pass to the activity where you can finish authentication.
+
+The full source code of MainActivity.java
+package com.wave.smsverification;
+import android.app.Activity;
+import android.app.PendingIntent;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.IntentSender;
+import android.os.Bundle;
+import android.support.constraint.ConstraintLayout;
+import android.view.View;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.Toast;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.appcompat.app.AppCompatActivity;
+import com.google.android.gms.auth.api.Auth;
+import com.google.android.gms.auth.api.credentials.Credential;
+import com.google.android.gms.auth.api.credentials.HintRequest;
+import com.google.android.gms.auth.api.phone.SmsRetriever;
+import com.google.android.gms.auth.api.phone.SmsRetrieverClient;
+import com.google.android.gms.common.ConnectionResult;
+import com.google.android.gms.common.api.GoogleApiClient;
+import com.google.android.gms.tasks.OnFailureListener;
+import com.google.android.gms.tasks.OnSuccessListener;
+import com.google.android.gms.tasks.Task;
+import com.wave.smsverification.interfaces.OtpReceivedInterface;
+import com.wave.smsverification.receiver.SmsBroadcastReceiver;
+public class MainActivity extends AppCompatActivity implements GoogleApiClient.ConnectionCallbacks,
+    OtpReceivedInterface, GoogleApiClient.OnConnectionFailedListener {
+  GoogleApiClient mGoogleApiClient;
+  SmsBroadcastReceiver mSmsBroadcastReceiver;
+  private int RESOLVE_HINT = 2;
+  EditText inputMobileNumber, inputOtp;
+  Button btnGetOtp, btnVerifyOtp;
+  ConstraintLayout layoutInput, layoutVerify;
+  @Override
+  protected void onCreate(Bundle savedInstanceState) {
+    super.onCreate(savedInstanceState);
+    setContentView(R.layout.activity_main);
+    initViews();
+    // init broadcast receiver
+    mSmsBroadcastReceiver = new SmsBroadcastReceiver();
+    //set google api client for hint request
+    mGoogleApiClient = new GoogleApiClient.Builder(this)
+        .addConnectionCallbacks(this)
+        .enableAutoManage(this, this)
+        .addApi(Auth.CREDENTIALS_API)
+        .build();
+    mSmsBroadcastReceiver.setOnOtpListeners(this);
+    IntentFilter intentFilter = new IntentFilter();
+    intentFilter.addAction(SmsRetriever.SMS_RETRIEVED_ACTION);
+    getApplicationContext().registerReceiver(mSmsBroadcastReceiver, intentFilter);
+    // get mobile number from phone
+    getHintPhoneNumber();
+    btnGetOtp.setOnClickListener(new View.OnClickListener() {
+      @Override public void onClick(View v) {
+        // Call server API for requesting OTP and when you got success start
+        // SMS Listener for listing auto read message lsitner
+        startSMSListener();
+      }
+    });
+  }
+  private void initViews() {
+    inputMobileNumber = findViewById(R.id.editTextInputMobile);
+    inputOtp = findViewById(R.id.editTextOTP);
+    btnGetOtp = findViewById(R.id.buttonGetOTP);
+    btnVerifyOtp = findViewById(R.id.buttonVerify);
+    layoutInput = findViewById(R.id.getOTPLayout);
+    layoutVerify = findViewById(R.id.verifyOTPLayout);
+  }
+  @Override public void onConnected(@Nullable Bundle bundle) {
+  }
+  @Override public void onConnectionSuspended(int i) {
+  }
+  @Override public void onOtpReceived(String otp) {
+    Toast.makeText(this, "Otp Received " + otp, Toast.LENGTH_LONG).show();
+    inputOtp.setText(otp);
+  }
+  @Override public void onOtpTimeout() {
+    Toast.makeText(this, "Time out, please resend", Toast.LENGTH_LONG).show();
+  }
+  @Override public void onConnectionFailed(@NonNull ConnectionResult connectionResult) {
+  }
+  public void startSMSListener() {
+    SmsRetrieverClient mClient = SmsRetriever.getClient(this);
+    Task<Void> mTask = mClient.startSmsRetriever();
+    mTask.addOnSuccessListener(new OnSuccessListener<Void>() {
+      @Override public void onSuccess(Void aVoid) {
+        layoutInput.setVisibility(View.GONE);
+        layoutVerify.setVisibility(View.VISIBLE);
+        Toast.makeText(MainActivity.this, "SMS Retriever starts", Toast.LENGTH_LONG).show();
+      }
+    });
+    mTask.addOnFailureListener(new OnFailureListener() {
+      @Override public void onFailure(@NonNull Exception e) {
+        Toast.makeText(MainActivity.this, "Error", Toast.LENGTH_LONG).show();
+      }
+    });
+  }
+  public void getHintPhoneNumber() {
+    HintRequest hintRequest =
+        new HintRequest.Builder()
+            .setPhoneNumberIdentifierSupported(true)
+            .build();
+    PendingIntent mIntent = Auth.CredentialsApi.getHintPickerIntent(mGoogleApiClient, hintRequest);
+    try {
+      startIntentSenderForResult(mIntent.getIntentSender(), RESOLVE_HINT, null, 0, 0, 0);
+    } catch (IntentSender.SendIntentException e) {
+      e.printStackTrace();
+    }
+  }
+  @Override
+  protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
+    super.onActivityResult(requestCode, resultCode, data);
+    //Result if we want hint number
+    if (requestCode == RESOLVE_HINT) {
+      if (resultCode == Activity.RESULT_OK) {
+        if (data != null) {
+          Credential credential = data.getParcelableExtra(Credential.EXTRA_KEY);
+          // credential.getId();  < – will need to process phone number string
+          inputMobileNumber.setText(credential.getId());
+        }
+      }
+    }
+  }
+}
+6. Test the Demo App
+When sever receive the request to OTP via REST API, Server will send OTP message to device. You have to follow below message format.
+
+Message Format Must Be –
+Google introduced a new format for OTP message. Follow below SMS format
+
+Prefix: <#>  
+The message should start with <#>
+Content: Your OTP is: 156367
+Postfix: Application key hash from Keystore (Debug or Release) eg. T61bL03HCN8
+The message should end with hashcode. It received from LOG CAT generated by the AppSignature helper. Based on this system will pass the message to the respective app.   
+Let’s check below Example
+<#> You OTP is: 156367 T61bL03HCN8
+
+For server side code you can follow below link
+https://developers.google.com/identity/sms-retriever/verify#generating_a_one-time_code
+https://www.twilio.com/docs/sms/app-verification
+7. How to get APK’s hashcode for SMS construction
+Let’s create a class named is AppSignatureHelper and paste the below code. This is the simplest way to get Hashcode. You can generate using CMD as well. Once you got hashcode than that deletes helper class.
+
+package com.wave.smsverification.helper;
+import android.content.Context;
+import android.content.ContextWrapper;
+import android.content.pm.PackageManager;
+import android.content.pm.Signature;
+import android.util.Base64;
+import android.util.Log;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
+import java.util.Arrays;
+/**
+ * Created on : May 21, 2019
+ * Author     : AndroidWave
+ */
+public class AppSignatureHelper extends ContextWrapper {
+  private static final String TAG = "AppSignatureHelper";
+  private static final String HASH_TYPE = "SHA-256";
+  public static final int NUM_HASHED_BYTES = 9;
+  public static final int NUM_BASE64_CHAR = 11;
+  public AppSignatureHelper(Context context) {
+    super(context);
+  }
+  /**
+   * Get all the app signatures for the current package
+   */
+  public ArrayList<String> getAppSignatures() {
+    ArrayList<String> appCodes = new ArrayList<>();
+    try {
+      // Get all package signatures for the current package
+      String packageName = getPackageName();
+      PackageManager packageManager = getPackageManager();
+      Signature[] signatures = packageManager.getPackageInfo(packageName,
+          PackageManager.GET_SIGNATURES).signatures;
+      // For each signature create a compatible hash
+      for (Signature signature : signatures) {
+        String hash = hash(packageName, signature.toCharsString());
+        if (hash != null) {
+          appCodes.add(String.format("%s", hash));
+        }
+      }
+    } catch (PackageManager.NameNotFoundException e) {
+      Log.e(TAG, "Unable to find package to obtain hash.", e);
+    }
+    return appCodes;
+  }
+  private static String hash(String packageName, String signature) {
+    String appInfo = packageName + " " + signature;
+    try {
+      MessageDigest messageDigest = MessageDigest.getInstance(HASH_TYPE);
+      messageDigest.update(appInfo.getBytes(StandardCharsets.UTF_8));
+      byte[] hashSignature = messageDigest.digest();
+      // truncated into NUM_HASHED_BYTES
+      hashSignature = Arrays.copyOfRange(hashSignature, 0, NUM_HASHED_BYTES);
+      // encode into Base64
+      String base64Hash = Base64.encodeToString(hashSignature, Base64.NO_PADDING | Base64.NO_WRAP);
+      base64Hash = base64Hash.substring(0, NUM_BASE64_CHAR);
+      Log.d(TAG, String.format("pkg: %s – hash: %s", packageName, base64Hash));
+      return base64Hash;
+    } catch (NoSuchAlgorithmException e) {
+      Log.e(TAG, "hash:NoSuchAlgorithm", e);
+    }
+    return null;
+  }
+}
+Call getAppSignatures() methods in application onCreate()
+package com.wave.smsverification;
+import android.app.Application;
+import com.wave.smsverification.helper.AppSignatureHelper;
+/**
+ * Created on : May 21, 2019
+ * Author     : AndroidWave
+ */
+public class SmsVerificationApp extends Application {
+  @Override public void onCreate() {
+    super.onCreate();
+    AppSignatureHelper appSignatureHelper = new AppSignatureHelper(this);
+    appSignatureHelper.getAppSignatures();
+  }
+}
+8. Things you must do
+Once you completed get the hash code to remove the AppSignatureHelper class from your project before going to live or production.
+In Android, Debug and Release APK’s have different Hashcode, Kindly make sure you get hash code from release build.  
+9. Technology Used
+Tool: Android Studio v3.3 with API 28 (Pie 9.0), SDK
+Language: Java, XML
+
+Conclusion
+With the help of this android app tutorial, We have learned how to implement automatic SMS verification using SMS Retriever API. Later I will upload APK and Source code as well, So you can get source of this demo app.
